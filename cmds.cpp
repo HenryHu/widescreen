@@ -1,0 +1,196 @@
+#include "headers.h"
+
+#include "display.h"
+#include "constants.h"
+#include "util.h"
+
+const char ROOT_TEXT[] = R"(
+Available commands:
+/text    print text (x, y, text, r, g, b)
+/clear   clear area (x, y, w, h)
+/dot     draw dot (x, y, r, g, b)
+/config  configuration (brightness)
+/bitmap  draw bitmap (x, y, w, h), send bitmap in RGB565 format
+)";
+
+void HandleClear(AsyncWebServerRequest *request) {
+    int x = 0, y = 0, w = 0, h = 0;
+    if (request->hasParam("x")) {
+        x = request->getParam("x")->value().toInt();
+    }
+    if (request->hasParam("y")) {
+        y = request->getParam("y")->value().toInt();
+    }
+    if (request->hasParam("w")) {
+        w = request->getParam("w")->value().toInt();
+    } else {
+        w = display->width();
+    }
+    if (request->hasParam("h")) {
+        h = request->getParam("h")->value().toInt();
+    } else {
+        h = display->height();
+    }
+    if (x < 0 || y < 0 || w < 0 || h < 0 || x >= display->width() || y >= display->height()) {
+        request->send(400, "text/plain", "input args out of range");
+        return;
+    }
+    display->fillRect(x, y, w, h, BLACK);
+    request->send(200, "text/plain", "ok");
+}
+
+void HandleConfig(AsyncWebServerRequest *request) {
+    if (request->hasParam("brightness")) {
+        int brightness = request->getParam("brightness")->value().toInt();
+        if (brightness < 0 || brightness > 255) {
+            request->send(400, "text/plain", "input args out of range");
+            return;
+        }
+        display->setBrightness(brightness);
+    }
+    request->send(200, "text/plain", "ok");
+}
+
+void HandleText(AsyncWebServerRequest *request) {
+    if (!request->hasParam("text")) {
+        request->send(404, "text/plain", "text param missing");
+        return;
+    }
+    const std::string text = request->getParam("text")->value().c_str();
+
+    int x = 0, y = 0, r = 32, g = 32, b = 32;
+    if (request->hasParam("x")) {
+        x = request->getParam("x")->value().toInt();
+    }
+    if (request->hasParam("y")) {
+        y = request->getParam("y")->value().toInt();
+    }
+    if (request->hasParam("r")) {
+        r = request->getParam("r")->value().toInt();
+    }
+    if (request->hasParam("g")) {
+        g = request->getParam("g")->value().toInt();
+    }
+    if (request->hasParam("b")) {
+        b = request->getParam("b")->value().toInt();
+    }
+    if (x < 0 || y < 0 || x >= display->width() || y >= display->height()) {
+        request->send(400, "text/plain", "input args out of range");
+        return;
+    }
+
+    uint16_t color = display->color565(r, g, b);
+
+    TextOut(x, y, text, color);
+
+    request->send(200, "text/plain", "ok");
+}
+
+void HandleDot(AsyncWebServerRequest *request) {
+    int x = 0, y = 0, r = 0, g = 0, b = 0;
+    if (request->hasParam("x")) {
+        x = request->getParam("x")->value().toInt();
+    }
+    if (request->hasParam("y")) {
+        y = request->getParam("y")->value().toInt();
+    }
+    if (request->hasParam("r")) {
+        r = request->getParam("r")->value().toInt();
+    }
+    if (request->hasParam("g")) {
+        g = request->getParam("g")->value().toInt();
+    }
+    if (request->hasParam("b")) {
+        b = request->getParam("b")->value().toInt();
+    }
+    if (x < 0 || y < 0 || x >= display->width() || y >= display->height()) {
+        request->send(400, "text/plain", "input args out of range");
+        return;
+    }
+
+    const uint16_t color = display->color565(r, g, b);
+    display->drawPixel(x, y, color);
+
+    request->send(200, "text/plain", "ok");
+}
+
+void HandleBitmap(AsyncWebServerRequest *request, uint8_t *data, size_t len,
+        size_t index, size_t total) {
+    Serial.printf("Bitmap body handler: %d %d %d\n\r", len, index, total);
+
+    if (request->_tempObject == nullptr) {
+        request->_tempObject = malloc(total);
+    }
+
+    unsigned char *buf = (unsigned char*)request->_tempObject;
+    for (int i = 0; i < len; ++i) {
+        buf[i + index] = data[i];
+    }
+}
+
+void HandleBitmapEnd(AsyncWebServerRequest * request){
+    Serial.printf("Bitmap request end handler\n\r");
+
+    int x = 0, y = 0, w = 0, h = 0;
+    if (request->hasParam("x")) {
+        x = request->getParam("x")->value().toInt();
+    }
+    if (request->hasParam("y")) {
+        y = request->getParam("y")->value().toInt();
+    }
+    if (request->hasParam("w")) {
+        w = request->getParam("w")->value().toInt();
+    } else {
+        w = display->width();
+    }
+    if (request->hasParam("h")) {
+        h = request->getParam("h")->value().toInt();
+    } else {
+        w = display->height();
+    }
+    if (x < 0 || y < 0 || w < 0 || h < 0 || x >= display->width() || y >= display->height()) {
+        request->send(400, "text/plain", "input args out of range");
+        return;
+    }
+
+    const int len = request->contentLength();
+    if (len < w * h * 2) {
+        request->send(400, "text/plain", String("body too short: ") + String(len));
+        return;
+    }
+
+    unsigned char* buf = (unsigned char*)request->_tempObject;
+    if (buf == nullptr) {
+        request->send(500, "text/plain", "insufficient data");
+        return;
+    }
+
+    for (int dy = 0; dy < h; ++dy) {
+        for (int dx = 0; dx < w; ++dx) {
+            const int offset = (dy * w + dx) * 2;
+            const uint16_t pixel = buf[offset] << 8 | buf[offset + 1];
+            display->drawPixel(x + dx, y + dy, pixel);
+        }
+    }
+    if (request->_tempObject != nullptr) {
+        free(buf);
+        request->_tempObject = nullptr;
+    }
+
+    request->send(200, "text/plain", "ok");
+}
+
+void HandleRoot(AsyncWebServerRequest *request) {
+    request->send(200, "text/plain", ROOT_TEXT);
+}
+
+void SetupServer(AsyncWebServer& server) {
+    server.on("/", HTTP_ANY, HandleRoot);
+    server.on("/text", HTTP_ANY, HandleText);
+    server.on("/config", HTTP_ANY, HandleConfig);
+    server.on("/clear", HTTP_ANY, HandleClear);
+    server.on("/dot", HTTP_ANY, HandleDot);
+    server.on("/bitmap", HTTP_POST, HandleBitmapEnd, nullptr, HandleBitmap);
+
+    server.begin();
+}
